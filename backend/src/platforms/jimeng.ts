@@ -3,17 +3,9 @@ import { AIGCPlatformAdapter } from './types';
 
 /**
  * 即梦适配器（火山引擎方舟）
- * 基于火山引擎官方文档精确实现：
- * - 创建任务：POST /contents/generations/tasks
- * - 查询任务：GET /contents/generations/tasks/{id}
- * - 状态：queued → running → succeeded / failed / expired
- * - 模型：doubao-seedance-1-0-pro-fast-251015
- * 
- * 1.0 Pro Fast 限制：
- * - 不支持首尾帧、generate_audio、seed、camera_fixed、draft、priority
- * - 支持文生视频、图生视频-首帧
- * - duration 范围 [2, 12]，默认 5
- * - resolution 默认 1080p，支持 480p/720p/1080p
+ * 支持：
+ * - 视频生成：异步接口 POST /contents/generations/tasks，需轮询
+ * - 图像生成：同步接口 POST /images/generations，直接返回结果
  */
 export class JimengAdapter implements AIGCPlatformAdapter {
   name = 'jimeng';
@@ -39,84 +31,125 @@ export class JimengAdapter implements AIGCPlatformAdapter {
 
   /**
    * 提交生成任务
-   * Endpoint: POST /contents/generations/tasks
+   * 根据 type 分支：
+   * - video: 异步接口，返回真实 task_id
+   * - image: 同步接口，直接生成图片，返回 fake task_id（兼容轮询架构）
    */
   async submitTask(content: string, type: 'image' | 'video'): Promise<{ platformTaskId: string }> {
-    const videoModel = process.env.JIMENG_VIDEO_MODEL || 'doubao-seedance-1-0-pro-fast-251015';
-    const imageModel = process.env.JIMENG_IMAGE_MODEL || '';
-    const model = type === 'image' ? imageModel : videoModel;
-
-    if (!model) {
-      throw new Error(`JIMENG_${type.toUpperCase()}_MODEL 未配置`);
+    if (type === 'image') {
+      return this.submitImageTask(content);
+    } else {
+      return this.submitVideoTask(content);
     }
+  }
 
-    // content 必须按文档格式：数组，包含 type 字段
-    const contentArray = [{ type: 'text' as const, text: content }];
+  /**
+   * 图像生成：同步接口
+   * Endpoint: POST /images/generations
+   */
+  private async submitImageTask(content: string): Promise<{ platformTaskId: string }> {
+    const model = process.env.JIMENG_IMAGE_MODEL || 'doubao-seedream-4-5-251128';
+
+    const payload = {
+      model,
+      prompt: content,
+      watermark: false,
+      n: 1,              // 固定生成1张
+    };
+
+    try {
+      const response = await this.client.post('/images/generations', payload);
+      const imageUrl = response.data?.data?.[0]?.url;
+
+      if (!imageUrl) {
+        throw new Error(`图像生成未返回 URL: ${JSON.stringify(response.data)}`);
+      }
+
+      // 为了兼容现有异步任务架构（数据库需要 platform_task_id，前端有轮询逻辑），
+      // 生成一个 fake task ID，并把图片 URL 暂存（通过类实例变量或 queryTask 时识别）
+      const fakeTaskId = `img-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`;
+
+      // 使用类实例变量暂存 fake task 的结果 URL
+      // 注意：如果后端重启，这些暂存会丢失，但 fake task 只存在于轮询期间，可接受
+      (this as any).imageResults = (this as any).imageResults || {};
+      (this as any).imageResults[fakeTaskId] = imageUrl;
+
+      console.log(`[JimengAdapter] 图像生成成功，fakeTaskId: ${fakeTaskId}, url: ${imageUrl}`);
+      return { platformTaskId: fakeTaskId };
+    } catch (error: any) {
+      console.error('[JimengAdapter] 图像生成失败:', error.response?.data || error.message);
+      throw new Error(`图像生成失败: ${error.response?.data?.message || error.message}`);
+    }
+  }
+
+  /**
+   * 视频生成：异步接口
+   * Endpoint: POST /contents/generations/tasks
+   */
+  private async submitVideoTask(content: string): Promise<{ platformTaskId: string }> {
+    const model = process.env.JIMENG_VIDEO_MODEL || 'doubao-seedance-1-0-pro-fast-251015';
 
     const payload: any = {
       model,
-      content: contentArray,
+      content: [{ type: 'text', text: content }],
       watermark: false,
+      resolution: '720p',
+      ratio: '16:9',
+      duration: 5,
     };
-
-    if (type === 'video') {
-      // 1.0 Pro Fast 视频参数（严格遵守文档限制）
-      payload.resolution = '720p';    // 720p 比 1080p 便宜
-      payload.ratio = '16:9';
-      payload.duration = 5;           // 5秒，成本最低
-      // 注意：1.0 Pro Fast 不支持以下参数，绝对不能传：
-      // - generate_audio
-      // - seed
-      // - camera_fixed
-      // - draft
-      // - priority
-    }
-
-    if (type === 'image') {
-      // 图像参数（根据实际图像模型文档调整）
-      payload.size = '1024x1024';
-      payload.quality = 'standard';
-    }
 
     try {
       const response = await this.client.post('/contents/generations/tasks', payload);
       const taskId = response.data?.id;
 
       if (!taskId) {
-        throw new Error(`即梦 API 未返回任务 id: ${JSON.stringify(response.data)}`);
+        throw new Error(`视频生成未返回任务 id: ${JSON.stringify(response.data)}`);
       }
 
-      console.log(`[JimengAdapter] 任务提交成功，id: ${taskId}, model: ${model}, type: ${type}`);
+      console.log(`[JimengAdapter] 视频任务提交成功，id: ${taskId}`);
       return { platformTaskId: String(taskId) };
     } catch (error: any) {
-      console.error('[JimengAdapter] 提交任务失败:', error.response?.data || error.message);
-      throw new Error(`即梦 API 调用失败: ${error.response?.data?.message || error.message}`);
+      console.error('[JimengAdapter] 视频任务提交失败:', error.response?.data || error.message);
+      throw new Error(`视频生成失败: ${error.response?.data?.message || error.message}`);
     }
   }
 
   /**
    * 查询任务状态
-   * Endpoint: GET /contents/generations/tasks/{id}
-   * 火山引擎状态：queued → running → succeeded / failed / expired
+   * 根据 platformTaskId 前缀分支：
+   * - img-xxx: 图像 fake task，直接返回 completed + 暂存的 URL
+   * - cgt-xxx: 视频真实 task，调用火山引擎查询接口
    */
   async queryTask(platformTaskId: string): Promise<{
     status: 'processing' | 'completed' | 'failed';
     resultUrl?: string;
     errorMessage?: string;
   }> {
+    // 图像 fake task：直接返回已完成
+    if (platformTaskId.startsWith('img-')) {
+      const imageResults = (this as any).imageResults || {};
+      const resultUrl = imageResults[platformTaskId];
+
+      if (resultUrl) {
+        console.log(`[JimengAdapter] 图像 fake task 直接返回 completed: ${platformTaskId}`);
+        return { status: 'completed', resultUrl };
+      } else {
+        // 如果后端重启导致暂存丢失，返回失败
+        return { status: 'failed', errorMessage: '图像结果暂存已过期（后端可能已重启）' };
+      }
+    }
+
+    // 视频真实 task：调用火山引擎查询接口
     try {
       const response = await this.client.get(`/contents/generations/tasks/${platformTaskId}`);
       const data = response.data;
 
-      // 强制打印完整返回（确保能排查问题）
-      console.error('[JimengAdapter] 查询任务原始返回:', JSON.stringify(data, null, 2));
+      console.log('[JimengAdapter] 视频任务查询返回:', JSON.stringify(data, null, 2));
 
       const status = data?.status;
 
-      // 状态映射：火山引擎 → 统一状态
       switch (status) {
         case 'succeeded': {
-          // 地毯式搜索 resultUrl，覆盖所有可能的字段路径
           const possiblePaths = [
             data?.output?.video_url,
             data?.output?.image_url,
@@ -144,13 +177,8 @@ export class JimengAdapter implements AIGCPlatformAdapter {
           for (const url of possiblePaths) {
             if (url && typeof url === 'string' && url.startsWith('http')) {
               resultUrl = url;
-              console.error('[JimengAdapter] 找到结果 URL:', resultUrl);
               break;
             }
-          }
-
-          if (!resultUrl) {
-            console.error('[JimengAdapter] 警告: 状态为 succeeded 但未找到 resultUrl，完整返回:', JSON.stringify(data));
           }
 
           return { status: 'completed', resultUrl };
@@ -161,17 +189,14 @@ export class JimengAdapter implements AIGCPlatformAdapter {
             errorMessage: data?.error?.message || data?.message || '生成失败',
           };
         case 'expired':
-          return {
-            status: 'failed',
-            errorMessage: '任务超时（超过48小时或自定义过期时间）',
-          };
+          return { status: 'failed', errorMessage: '任务超时' };
         case 'queued':
         case 'running':
         default:
           return { status: 'processing' };
       }
     } catch (error: any) {
-      console.error('[JimengAdapter] 查询任务失败:', error.response?.data || error.message);
+      console.error('[JimengAdapter] 视频任务查询失败:', error.response?.data || error.message);
       return {
         status: 'failed',
         errorMessage: `查询失败: ${error.response?.data?.message || error.message}`,
