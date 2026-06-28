@@ -5,13 +5,18 @@
         <a-input
           v-model:value="content"
           placeholder="请输入生成指令"
-          style="width: 360px"
+          style="width: 320px"
           @pressEnter="handleSubmit"
         />
         <a-radio-group v-model:value="taskType">
           <a-radio value="image">图片生成</a-radio>
           <a-radio value="video">视频生成</a-radio>
         </a-radio-group>
+        <a-select
+          v-model:value="platform"
+          :options="platformOptions"
+          style="width: 140px"
+        />
         <a-button type="primary" @click="handleSubmit">开始生成</a-button>
       </a-space>
     </a-card>
@@ -40,6 +45,12 @@
               style="max-width: 400px; width: 100%"
             />
             <p class="result-content">{{ task.content }}</p>
+            <p class="result-meta">
+              平台：{{ platformLabel(task.platform) }} | {{ task.created_at }}
+            </p>
+            <a :href="task.result_url" download target="_blank">
+              <a-button type="primary" size="small">下载结果</a-button>
+            </a>
           </div>
         </a-col>
       </a-row>
@@ -55,17 +66,36 @@
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'status'">
-            <a-tag :color="statusColor(record.status)">
+            <a-tooltip v-if="record.status === 'failed'" :title="record.error_message || '生成失败'">
+              <a-tag :color="statusColor(record.status)">
+                {{ statusText(record.status) }}
+              </a-tag>
+            </a-tooltip>
+            <a-tag v-else :color="statusColor(record.status)">
+              <loading-outlined v-if="record.status === 'processing'" />
               {{ statusText(record.status) }}
             </a-tag>
           </template>
           <template v-else-if="column.key === 'type'">
             {{ typeText(record.type) }}
           </template>
+          <template v-else-if="column.key === 'platform'">
+            {{ platformLabel(record.platform) }}
+          </template>
           <template v-else-if="column.key === 'action'">
-            <a-button danger size="small" @click="handleDelete(record.id)">
-              删除
-            </a-button>
+            <a-space>
+              <a
+                v-if="record.status === 'completed' && record.result_url"
+                :href="record.result_url"
+                download
+                target="_blank"
+              >
+                <a-button size="small">下载</a-button>
+              </a>
+              <a-button danger size="small" @click="handleDelete(record.id)">
+                删除
+              </a-button>
+            </a-space>
           </template>
         </template>
       </a-table>
@@ -76,6 +106,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { message } from 'ant-design-vue';
+import { LoadingOutlined } from '@ant-design/icons-vue';
 import { createTask, getTasks, deleteTask } from '../api/task';
 
 interface Task {
@@ -84,22 +115,32 @@ interface Task {
   type: string;
   status: string;
   result_url: string;
+  platform: string;
+  platform_task_id: string;
+  error_message: string;
   created_at: string;
 }
 
 const content = ref('');
 const taskType = ref('video');
+const platform = ref('volcano');
 const tasks = ref<Task[]>([]);
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
+
+const platformOptions = [
+  { label: '火山引擎', value: 'volcano' },
+  { label: '即梦', value: 'dreamina' }
+];
 
 const columns = [
   { title: 'ID', dataIndex: 'id', key: 'id', width: 80 },
   { title: '内容', dataIndex: 'content', key: 'content', ellipsis: true },
   { title: '类型', dataIndex: 'type', key: 'type', width: 100 },
+  { title: '平台', dataIndex: 'platform', key: 'platform', width: 120 },
   { title: '状态', dataIndex: 'status', key: 'status', width: 120 },
   { title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 180 },
-  { title: '操作', key: 'action', width: 120 }
+  { title: '操作', key: 'action', width: 160 }
 ];
 
 const completedTasks = computed(() =>
@@ -150,7 +191,7 @@ const handleSubmit = async () => {
   }
 
   try {
-    await createTask(value, taskType.value);
+    await createTask(value, taskType.value, platform.value);
     content.value = '';
     message.success('提交成功');
     await fetchTasks();
@@ -206,6 +247,14 @@ const typeText = (type: string) => {
   return type === 'image' ? '图像' : type === 'video' ? '视频' : type;
 };
 
+const platformLabel = (platformName: string) => {
+  const map: Record<string, string> = {
+    volcano: '火山引擎',
+    dreamina: '即梦'
+  };
+  return map[platformName] || platformName;
+};
+
 onMounted(() => {
   fetchTasks();
 });
@@ -235,7 +284,15 @@ onUnmounted(() => {
 .result-content {
   margin-top: 12px;
   margin-bottom: 0;
-  color: #555;
+  color: #333;
   font-size: 14px;
+  font-weight: 500;
+}
+
+.result-meta {
+  margin-top: 4px;
+  margin-bottom: 12px;
+  color: #888;
+  font-size: 12px;
 }
 </style>

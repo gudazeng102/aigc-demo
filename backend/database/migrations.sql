@@ -4,5 +4,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   type TEXT NOT NULL DEFAULT 'image',
   status TEXT NOT NULL DEFAULT 'pending',
   result_url TEXT DEFAULT '',
+  platform TEXT DEFAULT 'volcano',
+  platform_task_id TEXT DEFAULT '',
+  error_message TEXT DEFAULT '',
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );

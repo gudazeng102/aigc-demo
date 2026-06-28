@@ -13,8 +13,12 @@ api.interceptors.response.use(
   }
 );
 
-export const createTask = (content: string, type: string = 'image') => {
-  return api.post('/tasks', { content, type });
+export const createTask = (
+  content: string,
+  type: string = 'image',
+  platform: string = 'volcano'
+) => {
+  return api.post('/tasks', { content, type, platform });
 };
 
 export const getTasks = () => {
