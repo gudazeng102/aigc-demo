@@ -12,6 +12,16 @@ interface TaskRow {
   created_at: string;
 }
 
+function generateResultUrl(type: string, id: number): string {
+  if (type === 'image') {
+    return `https://picsum.photos/400/300?random=${id}`;
+  }
+  if (type === 'video') {
+    return 'https://www.w3schools.com/html/mov_bbb.mp4';
+  }
+  return '';
+}
+
 router.post('/tasks', (req, res) => {
   const { content, type = 'image' } = req.body;
 
@@ -20,16 +30,39 @@ router.post('/tasks', (req, res) => {
     return;
   }
 
-  const insert = db.prepare('INSERT INTO tasks (content, type) VALUES (?, ?)');
-  const info = insert.run(content.trim(), type);
+  const taskType = type === 'video' ? 'video' : 'image';
 
-  const row = db.prepare('SELECT * FROM tasks WHERE id = ?').get(info.lastInsertRowid) as TaskRow;
+  const insert = db.prepare('INSERT INTO tasks (content, type, status) VALUES (?, ?, ?)');
+  const info = insert.run(content.trim(), taskType, 'pending');
+  const taskId = info.lastInsertRowid as number;
+
+  const row = db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId) as TaskRow;
+
+  const delay = Math.floor(Math.random() * 5000) + 5000;
+  setTimeout(() => {
+    const resultUrl = generateResultUrl(taskType, taskId);
+    const update = db.prepare('UPDATE tasks SET status = ?, result_url = ? WHERE id = ?');
+    update.run('completed', resultUrl, taskId);
+  }, delay);
+
   res.status(201).json(row);
 });
 
 router.get('/tasks', (req, res) => {
   const rows = db.prepare('SELECT * FROM tasks ORDER BY created_at DESC').all() as TaskRow[];
   res.json({ data: rows });
+});
+
+router.get('/tasks/:id', (req, res) => {
+  const { id } = req.params;
+  const row = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as TaskRow | undefined;
+
+  if (!row) {
+    res.status(404).json({ success: false, message: '任务不存在' });
+    return;
+  }
+
+  res.json(row);
 });
 
 router.delete('/tasks/:id', (req, res) => {

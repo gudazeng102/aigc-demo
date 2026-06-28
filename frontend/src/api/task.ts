@@ -21,6 +21,10 @@ export const getTasks = () => {
   return api.get('/tasks');
 };
 
+export const getTaskById = (id: number) => {
+  return api.get(`/tasks/${id}`);
+};
+
 export const deleteTask = (id: number) => {
   return api.delete(`/tasks/${id}`);
 };
