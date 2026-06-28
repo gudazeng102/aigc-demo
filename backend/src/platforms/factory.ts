@@ -1,8 +1,3 @@
-
-
-import { DreaminaAdapter } from './dreamina';
-
-
 import { AIGCPlatformAdapter } from './types';
 import { JimengAdapter } from './jimeng';
 

@@ -129,9 +129,7 @@ const tasks = ref<Task[]>([]);
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 
 const platformOptions = [
-  { label: '即梦 (Jimeng)', value: 'jimeng' },
-  { label: '火山引擎', value: 'volcano' },
-  { label: '即梦旧版', value: 'dreamina' }
+  { label: '即梦 (Jimeng)', value: 'jimeng' }
 ];
 
 const columns = [
@@ -250,9 +248,7 @@ const typeText = (type: string) => {
 
 const platformLabel = (platformName: string) => {
   const map: Record<string, string> = {
-    jimeng: '即梦 (Jimeng)',
-    volcano: '火山引擎',
-    dreamina: '即梦旧版'
+    jimeng: '即梦 (Jimeng)'
   };
   return map[platformName] || platformName;
 };
