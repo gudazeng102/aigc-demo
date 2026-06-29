@@ -31,6 +31,9 @@ export const createTask = (payload: CreateTaskPayload) => {
   return api.post('/tasks', {
     platform: 'jimeng',
     ...payload
+  }, {
+    timeout: 120000, // 请求体可能很大（base64图片），超时放宽到120秒
+    headers: { 'Content-Type': 'application/json' }
   });
 };
 
