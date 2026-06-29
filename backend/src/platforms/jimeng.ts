@@ -136,19 +136,21 @@ export class JimengAdapter implements AIGCPlatformAdapter {
     // 1. 文本提示词
     contentArray.push({ type: 'text', text: content });
 
-    // 2. 参考图（首帧）- 两者都支持
+    // 2. 参考图（首帧）- 两者都支持，必须加 role: "first_frame"
     if (options?.imageUrl) {
       contentArray.push({
         type: 'image_url',
-        image_url: { url: options.imageUrl }
+        image_url: { url: options.imageUrl },
+        role: 'first_frame'
       });
     }
 
-    // 3. 尾帧图 - 仅 Pro 支持
+    // 3. 尾帧图 - 仅 Pro 支持，必须加 role: "last_frame"
     if (isPro && options?.endImageUrl) {
       contentArray.push({
         type: 'image_url',
-        image_url: { url: options.endImageUrl }
+        image_url: { url: options.endImageUrl },
+        role: 'last_frame'
       });
     }
 
@@ -174,6 +176,17 @@ export class JimengAdapter implements AIGCPlatformAdapter {
         payload.resolution = '480p';
       }
     }
+
+    // 调试日志
+    console.log('[JimengAdapter] 视频任务参数:', {
+      model,
+      isPro,
+      hasImageUrl: !!options?.imageUrl,
+      imageUrlPrefix: options?.imageUrl?.substring(0, 50),
+      hasEndImageUrl: !!options?.endImageUrl,
+      endImageUrlPrefix: options?.endImageUrl?.substring(0, 50),
+      contentArray: JSON.stringify(contentArray),
+    });
 
     try {
       const response = await this.client.post('/contents/generations/tasks', payload);
