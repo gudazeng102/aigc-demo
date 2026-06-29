@@ -13,12 +13,25 @@ api.interceptors.response.use(
   }
 );
 
-export const createTask = (
-  content: string,
-  type: string = 'image',
-  platform: string = 'volcano'
-) => {
-  return api.post('/tasks', { content, type, platform });
+export interface CreateTaskPayload {
+  content: string;
+  type: 'image' | 'video';
+  platform?: string;
+  model?: string;
+  resolution?: string;
+  ratio?: string;
+  duration?: number;
+  imageUrl?: string;
+  endImageUrl?: string;
+  generateAudio?: boolean;
+  draft?: boolean;
+}
+
+export const createTask = (payload: CreateTaskPayload) => {
+  return api.post('/tasks', {
+    platform: 'jimeng',
+    ...payload
+  });
 };
 
 export const getTasks = () => {

@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import db from '../db';
 import { getPlatformAdapter } from '../platforms/factory';
-import { AIGCPlatformAdapter } from '../platforms/types';
 
 const router = Router();
 
@@ -23,7 +22,7 @@ const POLL_INTERVAL_MS = 3000;
 function startTaskPolling(
   taskId: number,
   platformTaskId: string,
-  adapter: AIGCPlatformAdapter
+  adapter: any
 ) {
   let pollCount = 0;
 
@@ -78,8 +77,7 @@ function startTaskPolling(
 
 router.post('/tasks', async (req, res) => {
   const { content, type = 'image' } = req.body;
-  const platform =
-    req.body.platform || process.env.DEFAULT_PLATFORM || 'volcano';
+  const platform = req.body.platform || process.env.DEFAULT_PLATFORM || 'jimeng';
 
   if (!content || typeof content !== 'string' || content.trim() === '') {
     res.status(400).json({ success: false, message: 'content 为必填项' });
@@ -87,6 +85,18 @@ router.post('/tasks', async (req, res) => {
   }
 
   const taskType = type === 'video' ? 'video' : 'image';
+
+  // 透传所有可选参数给适配器
+  const options = {
+    model: req.body.model,
+    resolution: req.body.resolution,
+    ratio: req.body.ratio,
+    duration: req.body.duration,
+    imageUrl: req.body.imageUrl,
+    endImageUrl: req.body.endImageUrl,
+    generateAudio: req.body.generateAudio,
+    draft: req.body.draft,
+  };
 
   // 1. 先写入数据库，状态为 pending
   const insert = db.prepare(
@@ -100,7 +110,8 @@ router.post('/tasks', async (req, res) => {
     const adapter = getPlatformAdapter(platform);
     const { platformTaskId } = await adapter.submitTask(
       content.trim(),
-      taskType
+      taskType,
+      options
     );
 
     // 3. 更新为 processing 并记录平台任务 ID
@@ -154,17 +165,3 @@ router.delete('/tasks/:id', (req, res) => {
 });
 
 export default router;
-
-/*
-// 第二轮模拟生成逻辑（已停用，保留备用）
-// 原 setTimeout 模拟代码：
-const delay = Math.floor(Math.random() * 5000) + 5000;
-setTimeout(() => {
-  const resultUrl =
-    type === 'image'
-      ? `https://picsum.photos/400/300?random=${id}`
-      : 'https://www.w3schools.com/html/mov_bbb.mp4';
-  const update = db.prepare('UPDATE tasks SET status = ?, result_url = ? WHERE id = ?');
-  update.run('completed', resultUrl, id);
-}, delay);
-*/

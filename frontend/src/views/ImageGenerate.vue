@@ -1,24 +1,44 @@
 <template>
   <div class="image-generate">
     <a-card title="图像生成">
-      <a-space :size="16" wrap align="baseline">
-        <a-input
-          v-model:value="content"
-          placeholder="请输入生成指令"
-          style="width: 320px"
-          @pressEnter="handleSubmit"
-        />
-        <a-radio-group v-model:value="taskType">
-          <a-radio value="image">图片生成</a-radio>
-          <a-radio value="video">视频生成</a-radio>
-        </a-radio-group>
-        <a-select
-          v-model:value="platform"
-          :options="platformOptions"
-          style="width: 140px"
-        />
-        <a-button type="primary" @click="handleSubmit">开始生成</a-button>
-      </a-space>
+      <a-form layout="vertical">
+        <a-form-item label="分辨率">
+          <a-radio-group v-model:value="form.resolution" option-type="button" :options="resolutionOptions" />
+        </a-form-item>
+
+        <a-form-item label="参考图">
+          <a-space direction="vertical" style="width: 100%">
+            <a-space>
+              <a-upload
+                :before-upload="(file: any) => beforeUpload(file)"
+                :show-upload-list="false"
+                accept="image/*"
+              >
+                <a-button><upload-outlined /> 上传参考图</a-button>
+              </a-upload>
+              <a-button @click="useSampleImage">使用示例图</a-button>
+            </a-space>
+            <a-input v-model:value="form.imageUrl" placeholder="或输入图片 URL / base64（可选）" />
+            <div v-if="form.imageUrl" class="preview-text">已选择参考图</div>
+          </a-space>
+        </a-form-item>
+
+        <a-form-item label="生成数量">
+          <a-input-number :value="1" :disabled="true" style="width: 120px" />
+        </a-form-item>
+
+        <a-form-item label="生成指令">
+          <a-textarea
+            v-model:value="form.prompt"
+            :rows="4"
+            placeholder="请输入图像生成指令，描述越详细效果越好"
+          />
+        </a-form-item>
+
+        <a-form-item>
+          <a-button type="primary" size="large" @click="handleSubmit">开始生成</a-button>
+        </a-form-item>
+      </a-form>
     </a-card>
 
     <a-card v-if="completedTasks.length > 0" title="生成结果" class="result-card">
@@ -106,7 +126,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { message } from 'ant-design-vue';
-import { LoadingOutlined } from '@ant-design/icons-vue';
+import { LoadingOutlined, UploadOutlined } from '@ant-design/icons-vue';
 import { createTask, getTasks, deleteTask } from '../api/task';
 
 interface Task {
@@ -121,15 +141,20 @@ interface Task {
   created_at: string;
 }
 
-const content = ref('');
-const taskType = ref('image');
-const platform = ref('jimeng');
-const tasks = ref<Task[]>([]);
+const form = ref({
+  resolution: '1K',
+  prompt: '',
+  imageUrl: '',
+});
 
+const sampleImageBase64 = ref('');
+const tasks = ref<Task[]>([]);
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 
-const platformOptions = [
-  { label: '即梦 (Jimeng)', value: 'jimeng' }
+const resolutionOptions = [
+  { label: '1K', value: '1K' },
+  { label: '2K', value: '2K' },
+  { label: '4K', value: '4K' },
 ];
 
 const columns = [
@@ -182,16 +207,59 @@ const checkPolling = () => {
   }
 };
 
+const beforeUpload = (file: File) => {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    form.value.imageUrl = e.target?.result as string;
+    message.success('图片已加载');
+  };
+  reader.readAsDataURL(file);
+  return false;
+};
+
+const useSampleImage = () => {
+  if (sampleImageBase64.value) {
+    form.value.imageUrl = sampleImageBase64.value;
+    message.success('已填入示例图');
+  } else {
+    message.warning('示例图尚未加载完成，请稍后再试');
+  }
+};
+
+const loadSampleImage = async () => {
+  try {
+    const response = await fetch('/tu/manbuzhe.jpg');
+    const blob = await response.blob();
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      sampleImageBase64.value = e.target?.result as string;
+    };
+    reader.readAsDataURL(blob);
+  } catch (error) {
+    console.error('加载示例图失败:', error);
+  }
+};
+
 const handleSubmit = async () => {
-  const value = content.value.trim();
-  if (!value) {
+  const prompt = form.value.prompt.trim();
+  if (!prompt) {
     message.warning('请输入生成指令');
     return;
   }
 
+  const payload: any = {
+    content: prompt,
+    type: 'image',
+    resolution: form.value.resolution,
+  };
+
+  if (form.value.imageUrl) {
+    payload.imageUrl = form.value.imageUrl;
+  }
+
   try {
-    await createTask(value, taskType.value, platform.value);
-    content.value = '';
+    await createTask(payload);
+    form.value.prompt = '';
     message.success('提交成功');
     await fetchTasks();
     startPolling();
@@ -214,31 +282,21 @@ const handleDelete = async (id: number) => {
 
 const statusColor = (status: string) => {
   switch (status) {
-    case 'pending':
-      return 'orange';
-    case 'processing':
-      return 'blue';
-    case 'completed':
-      return 'green';
-    case 'failed':
-      return 'red';
-    default:
-      return 'default';
+    case 'pending': return 'orange';
+    case 'processing': return 'blue';
+    case 'completed': return 'green';
+    case 'failed': return 'red';
+    default: return 'default';
   }
 };
 
 const statusText = (status: string) => {
   switch (status) {
-    case 'pending':
-      return '排队中';
-    case 'processing':
-      return '生成中';
-    case 'completed':
-      return '已完成';
-    case 'failed':
-      return '失败';
-    default:
-      return status;
+    case 'pending': return '排队中';
+    case 'processing': return '生成中';
+    case 'completed': return '已完成';
+    case 'failed': return '失败';
+    default: return status;
   }
 };
 
@@ -247,13 +305,12 @@ const typeText = (type: string) => {
 };
 
 const platformLabel = (platformName: string) => {
-  const map: Record<string, string> = {
-    jimeng: '即梦 (Jimeng)'
-  };
+  const map: Record<string, string> = { jimeng: '即梦 (Jimeng)' };
   return map[platformName] || platformName;
 };
 
 onMounted(() => {
+  loadSampleImage();
   fetchTasks();
 });
 
@@ -291,6 +348,11 @@ onUnmounted(() => {
   margin-top: 4px;
   margin-bottom: 12px;
   color: #888;
+  font-size: 12px;
+}
+
+.preview-text {
+  color: #52c41a;
   font-size: 12px;
 }
 </style>

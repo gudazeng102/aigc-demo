@@ -4,12 +4,14 @@ import { AIGCPlatformAdapter } from './types';
 /**
  * 即梦适配器（火山引擎方舟）
  * 支持：
+ * - 图像生成：同步接口 POST /images/generations，fake task ID 兼容轮询架构
  * - 视频生成：异步接口 POST /contents/generations/tasks，需轮询
- * - 图像生成：同步接口 POST /images/generations，直接返回结果
  */
 export class JimengAdapter implements AIGCPlatformAdapter {
   name = 'jimeng';
   private client: AxiosInstance;
+  // 图像 fake task 结果暂存（内存级，后端重启丢失，可接受）
+  private imageResults: Record<string, string> = {};
 
   constructor() {
     const apiKey = process.env.JIMENG_API_KEY || '';
@@ -31,15 +33,26 @@ export class JimengAdapter implements AIGCPlatformAdapter {
 
   /**
    * 提交生成任务
-   * 根据 type 分支：
-   * - video: 异步接口，返回真实 task_id
-   * - image: 同步接口，直接生成图片，返回 fake task_id（兼容轮询架构）
+   * 根据 type 分支到图像同步接口或视频异步接口
    */
-  async submitTask(content: string, type: 'image' | 'video'): Promise<{ platformTaskId: string }> {
+  async submitTask(
+    content: string,
+    type: 'image' | 'video',
+    options?: {
+      model?: string;
+      resolution?: string;
+      ratio?: string;
+      duration?: number;
+      imageUrl?: string;
+      endImageUrl?: string;
+      generateAudio?: boolean;
+      draft?: boolean;
+    }
+  ): Promise<{ platformTaskId: string }> {
     if (type === 'image') {
-      return this.submitImageTask(content);
+      return this.submitImageTask(content, options);
     } else {
-      return this.submitVideoTask(content);
+      return this.submitVideoTask(content, options);
     }
   }
 
@@ -47,15 +60,32 @@ export class JimengAdapter implements AIGCPlatformAdapter {
    * 图像生成：同步接口
    * Endpoint: POST /images/generations
    */
-  private async submitImageTask(content: string): Promise<{ platformTaskId: string }> {
-    const model = process.env.JIMENG_IMAGE_MODEL || 'doubao-seedream-4-5-251128';
+  private async submitImageTask(
+    content: string,
+    options?: { model?: string; resolution?: string; imageUrl?: string }
+  ): Promise<{ platformTaskId: string }> {
+    const model = options?.model || process.env.JIMENG_IMAGE_MODEL || 'doubao-seedream-4-5-251128';
 
-    const payload = {
+    // 分辨率映射：前端 1K/2K/4K → API size 字段
+    const payload: any = {
       model,
       prompt: content,
       watermark: false,
-      n: 1,              // 固定生成1张
+      n: 1, // 固定1张
     };
+
+    // 注：当前图像模型 doubao-seedream-4-5 不接受 size 参数，传了会报 400，
+    // 因此暂不传入 size。如需支持，需根据实际开通的图像模型调整。
+
+    // 参考图（图生图）
+    // 火山引擎图像生成若支持 content 数组，则传入 image_url；
+    // 若不支持，可改为 payload.reference_image = options.imageUrl
+    if (options?.imageUrl) {
+      payload.content = [
+        { type: 'text', text: content },
+        { type: 'image_url', image_url: { url: options.imageUrl } }
+      ];
+    }
 
     try {
       const response = await this.client.post('/images/generations', payload);
@@ -65,16 +95,11 @@ export class JimengAdapter implements AIGCPlatformAdapter {
         throw new Error(`图像生成未返回 URL: ${JSON.stringify(response.data)}`);
       }
 
-      // 为了兼容现有异步任务架构（数据库需要 platform_task_id，前端有轮询逻辑），
-      // 生成一个 fake task ID，并把图片 URL 暂存（通过类实例变量或 queryTask 时识别）
+      // 生成 fake task ID，暂存结果 URL
       const fakeTaskId = `img-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`;
+      this.imageResults[fakeTaskId] = imageUrl;
 
-      // 使用类实例变量暂存 fake task 的结果 URL
-      // 注意：如果后端重启，这些暂存会丢失，但 fake task 只存在于轮询期间，可接受
-      (this as any).imageResults = (this as any).imageResults || {};
-      (this as any).imageResults[fakeTaskId] = imageUrl;
-
-      console.log(`[JimengAdapter] 图像生成成功，fakeTaskId: ${fakeTaskId}, url: ${imageUrl}`);
+      console.log(`[JimengAdapter] 图像生成成功，fakeTaskId: ${fakeTaskId}`);
       return { platformTaskId: fakeTaskId };
     } catch (error: any) {
       console.error('[JimengAdapter] 图像生成失败:', error.response?.data || error.message);
@@ -86,17 +111,69 @@ export class JimengAdapter implements AIGCPlatformAdapter {
    * 视频生成：异步接口
    * Endpoint: POST /contents/generations/tasks
    */
-  private async submitVideoTask(content: string): Promise<{ platformTaskId: string }> {
-    const model = process.env.JIMENG_VIDEO_MODEL || 'doubao-seedance-1-0-pro-fast-251015';
+  private async submitVideoTask(
+    content: string,
+    options?: {
+      model?: string;
+      resolution?: string;
+      ratio?: string;
+      duration?: number;
+      imageUrl?: string;
+      endImageUrl?: string;
+      generateAudio?: boolean;
+      draft?: boolean;
+    }
+  ): Promise<{ platformTaskId: string }> {
+    // 确定模型ID
+    const videoModelFast = process.env.JIMENG_VIDEO_MODEL_FAST || 'doubao-seedance-1-0-pro-fast-251015';
+    const videoModelPro = process.env.JIMENG_VIDEO_MODEL_PRO || 'doubao-seedance-1-5-pro-251215';
+    const isPro = options?.model?.includes('1-5-pro') || false;
+    const model = options?.model || (isPro ? videoModelPro : videoModelFast);
+
+    // 构造 content 数组
+    const contentArray: any[] = [];
+
+    // 1. 文本提示词
+    contentArray.push({ type: 'text', text: content });
+
+    // 2. 参考图（首帧）- 两者都支持
+    if (options?.imageUrl) {
+      contentArray.push({
+        type: 'image_url',
+        image_url: { url: options.imageUrl }
+      });
+    }
+
+    // 3. 尾帧图 - 仅 Pro 支持
+    if (isPro && options?.endImageUrl) {
+      contentArray.push({
+        type: 'image_url',
+        image_url: { url: options.endImageUrl }
+      });
+    }
 
     const payload: any = {
       model,
-      content: [{ type: 'text', text: content }],
+      content: contentArray,
       watermark: false,
-      resolution: '720p',
-      ratio: '16:9',
-      duration: 5,
     };
+
+    // 通用视频参数
+    payload.resolution = options?.resolution || '720p';
+    payload.ratio = options?.ratio || (isPro ? 'adaptive' : '16:9');
+    payload.duration = options?.duration || 5;
+
+    // Pro 专属参数
+    if (isPro) {
+      if (options?.generateAudio !== undefined) {
+        payload.generate_audio = options.generateAudio;
+      }
+      if (options?.draft) {
+        payload.draft = true;
+        // draft 模式下强制 480p，且不支持 return_last_frame
+        payload.resolution = '480p';
+      }
+    }
 
     try {
       const response = await this.client.post('/contents/generations/tasks', payload);
@@ -106,7 +183,7 @@ export class JimengAdapter implements AIGCPlatformAdapter {
         throw new Error(`视频生成未返回任务 id: ${JSON.stringify(response.data)}`);
       }
 
-      console.log(`[JimengAdapter] 视频任务提交成功，id: ${taskId}`);
+      console.log(`[JimengAdapter] 视频任务提交成功，id: ${taskId}, model: ${model}`);
       return { platformTaskId: String(taskId) };
     } catch (error: any) {
       console.error('[JimengAdapter] 视频任务提交失败:', error.response?.data || error.message);
@@ -116,8 +193,7 @@ export class JimengAdapter implements AIGCPlatformAdapter {
 
   /**
    * 查询任务状态
-   * 根据 platformTaskId 前缀分支：
-   * - img-xxx: 图像 fake task，直接返回 completed + 暂存的 URL
+   * - img-xxx: 图像 fake task，直接返回 completed + 暂存 URL
    * - cgt-xxx: 视频真实 task，调用火山引擎查询接口
    */
   async queryTask(platformTaskId: string): Promise<{
@@ -125,29 +201,25 @@ export class JimengAdapter implements AIGCPlatformAdapter {
     resultUrl?: string;
     errorMessage?: string;
   }> {
-    // 图像 fake task：直接返回已完成
+    // 图像 fake task
     if (platformTaskId.startsWith('img-')) {
-      const imageResults = (this as any).imageResults || {};
-      const resultUrl = imageResults[platformTaskId];
-
+      const resultUrl = this.imageResults[platformTaskId];
       if (resultUrl) {
-        console.log(`[JimengAdapter] 图像 fake task 直接返回 completed: ${platformTaskId}`);
+        console.log(`[JimengAdapter] 图像 fake task 返回 completed: ${platformTaskId}`);
         return { status: 'completed', resultUrl };
       } else {
-        // 如果后端重启导致暂存丢失，返回失败
-        return { status: 'failed', errorMessage: '图像结果暂存已过期（后端可能已重启）' };
+        return { status: 'failed', errorMessage: '图像结果暂存已过期' };
       }
     }
 
-    // 视频真实 task：调用火山引擎查询接口
+    // 视频真实 task
     try {
       const response = await this.client.get(`/contents/generations/tasks/${platformTaskId}`);
       const data = response.data;
 
-      console.log('[JimengAdapter] 视频任务查询返回:', JSON.stringify(data, null, 2));
+      console.log('[JimengAdapter] 视频查询返回:', JSON.stringify(data, null, 2));
 
       const status = data?.status;
-
       switch (status) {
         case 'succeeded': {
           const possiblePaths = [
@@ -196,7 +268,7 @@ export class JimengAdapter implements AIGCPlatformAdapter {
           return { status: 'processing' };
       }
     } catch (error: any) {
-      console.error('[JimengAdapter] 视频任务查询失败:', error.response?.data || error.message);
+      console.error('[JimengAdapter] 视频查询失败:', error.response?.data || error.message);
       return {
         status: 'failed',
         errorMessage: `查询失败: ${error.response?.data?.message || error.message}`,

@@ -1,24 +1,84 @@
 <template>
   <div class="video-generate">
     <a-card title="视频生成">
-      <a-space :size="16" wrap align="baseline">
-        <a-input
-          v-model:value="content"
-          placeholder="请输入生成指令"
-          style="width: 320px"
-          @pressEnter="handleSubmit"
-        />
-        <a-radio-group v-model:value="taskType">
-          <a-radio value="image">图片生成</a-radio>
-          <a-radio value="video">视频生成</a-radio>
-        </a-radio-group>
-        <a-select
-          v-model:value="platform"
-          :options="platformOptions"
-          style="width: 140px"
-        />
-        <a-button type="primary" @click="handleSubmit">开始生成</a-button>
-      </a-space>
+      <a-form layout="vertical">
+        <a-form-item label="模型选择">
+          <a-select v-model:value="form.model" :options="modelOptions" @change="handleModelChange" />
+        </a-form-item>
+
+        <a-form-item label="分辨率">
+          <a-radio-group v-model:value="form.resolution" option-type="button" :options="resolutionOptions" />
+        </a-form-item>
+
+        <a-form-item label="比例">
+          <a-radio-group v-model:value="form.ratio" option-type="button" :options="ratioOptions" />
+        </a-form-item>
+
+        <a-form-item label="时长">
+          <a-slider v-model:value="form.duration" :min="2" :max="12" :step="1" show-markers />
+          <div class="duration-value">{{ form.duration }} 秒</div>
+        </a-form-item>
+
+        <a-form-item label="参考图（首帧）">
+          <a-space direction="vertical" style="width: 100%">
+            <a-upload
+              :before-upload="(file: any) => beforeUpload(file, 'imageUrl')"
+              :show-upload-list="false"
+              accept="image/*"
+            >
+              <a-button><upload-outlined /> 上传参考图</a-button>
+            </a-upload>
+            <a-input v-model:value="form.imageUrl" placeholder="或输入图片 URL / base64（可选）" />
+            <div v-if="form.imageUrl" class="preview-text">已选择参考图</div>
+          </a-space>
+        </a-form-item>
+
+        <template v-if="isProModel">
+          <a-form-item label="尾帧图">
+            <a-space direction="vertical" style="width: 100%">
+              <a-upload
+                :before-upload="(file: any) => beforeUpload(file, 'endImageUrl')"
+                :show-upload-list="false"
+                accept="image/*"
+              >
+                <a-button><upload-outlined /> 上传尾帧图</a-button>
+              </a-upload>
+              <div v-if="form.endImageUrl" class="preview-text">已选择尾帧图</div>
+            </a-space>
+          </a-form-item>
+
+          <a-form-item label="音频">
+            <a-radio-group v-model:value="form.generateAudio" option-type="button">
+              <a-radio :value="false">无声</a-radio>
+              <a-radio :value="true">有声</a-radio>
+            </a-radio-group>
+          </a-form-item>
+
+          <a-form-item label="草稿模式">
+            <a-radio-group v-model:value="form.draft" option-type="button">
+              <a-radio :value="false">关闭</a-radio>
+              <a-radio :value="true">开启</a-radio>
+            </a-radio-group>
+            <div class="hint">开启草稿模式会自动切换为 480p，生成更快更省钱</div>
+          </a-form-item>
+        </template>
+
+        <a-form-item label="生成数量">
+          <a-input-number :value="1" :disabled="true" style="width: 120px" />
+        </a-form-item>
+
+        <a-form-item label="生成指令">
+          <a-textarea
+            v-model:value="form.prompt"
+            :rows="4"
+            placeholder="请输入视频生成指令，描述越详细效果越好"
+          />
+        </a-form-item>
+
+        <a-form-item>
+          <a-button type="primary" size="large" @click="handleSubmit">开始生成</a-button>
+        </a-form-item>
+      </a-form>
     </a-card>
 
     <a-card v-if="completedTasks.length > 0" title="生成结果" class="result-card">
@@ -106,7 +166,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { message } from 'ant-design-vue';
-import { LoadingOutlined } from '@ant-design/icons-vue';
+import { LoadingOutlined, UploadOutlined } from '@ant-design/icons-vue';
 import { createTask, getTasks, deleteTask } from '../api/task';
 
 interface Task {
@@ -121,16 +181,67 @@ interface Task {
   created_at: string;
 }
 
-const content = ref('');
-const taskType = ref('video');
-const platform = ref('jimeng');
-const tasks = ref<Task[]>([]);
+const MODEL_FAST = 'doubao-seedance-1-0-pro-fast-251015';
+const MODEL_PRO = 'doubao-seedance-1-5-pro-251215';
 
+const defaultParams: Record<string, any> = {
+  [MODEL_FAST]: {
+    resolution: '720p',
+    ratio: '16:9',
+    duration: 5,
+    imageUrl: '',
+    endImageUrl: '',
+    generateAudio: false,
+    draft: false,
+  },
+  [MODEL_PRO]: {
+    resolution: '720p',
+    ratio: 'adaptive',
+    duration: 5,
+    imageUrl: '',
+    endImageUrl: '',
+    generateAudio: false,
+    draft: false,
+  },
+};
+
+const form = ref({
+  model: MODEL_FAST,
+  prompt: '',
+  resolution: '720p',
+  ratio: '16:9',
+  duration: 5,
+  imageUrl: '',
+  endImageUrl: '',
+  generateAudio: false,
+  draft: false,
+});
+
+const tasks = ref<Task[]>([]);
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 
-const platformOptions = [
-  { label: '即梦 (Jimeng)', value: 'jimeng' }
+const modelOptions = [
+  { label: '即梦 1.0 Pro Fast', value: MODEL_FAST },
+  { label: '即梦 1.5 Pro', value: MODEL_PRO },
 ];
+
+const resolutionOptions = [
+  { label: '480p', value: '480p' },
+  { label: '720p', value: '720p' },
+  { label: '1080p', value: '1080p' },
+];
+
+const ratioOptions = [
+  { label: '16:9', value: '16:9' },
+  { label: '4:3', value: '4:3' },
+  { label: '1:1', value: '1:1' },
+  { label: '3:4', value: '3:4' },
+  { label: '9:16', value: '9:16' },
+  { label: '21:9', value: '21:9' },
+  { label: 'adaptive', value: 'adaptive' },
+];
+
+const isProModel = computed(() => form.value.model.includes('1-5-pro'));
 
 const columns = [
   { title: 'ID', dataIndex: 'id', key: 'id', width: 80 },
@@ -182,16 +293,53 @@ const checkPolling = () => {
   }
 };
 
+const beforeUpload = (file: File, field: 'imageUrl' | 'endImageUrl') => {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    form.value[field] = e.target?.result as string;
+    message.success('图片已加载');
+  };
+  reader.readAsDataURL(file);
+  return false;
+};
+
+const handleModelChange = () => {
+  const defaults = JSON.parse(JSON.stringify(defaultParams[form.value.model]));
+  form.value.resolution = defaults.resolution;
+  form.value.ratio = defaults.ratio;
+  form.value.duration = defaults.duration;
+  form.value.imageUrl = defaults.imageUrl;
+  form.value.endImageUrl = defaults.endImageUrl;
+  form.value.generateAudio = defaults.generateAudio;
+  form.value.draft = defaults.draft;
+};
+
 const handleSubmit = async () => {
-  const value = content.value.trim();
-  if (!value) {
+  const prompt = form.value.prompt.trim();
+  if (!prompt) {
     message.warning('请输入生成指令');
     return;
   }
 
+  const payload: any = {
+    content: prompt,
+    type: 'video',
+    model: form.value.model,
+    resolution: form.value.resolution,
+    ratio: form.value.ratio,
+    duration: form.value.duration,
+    imageUrl: form.value.imageUrl,
+  };
+
+  if (isProModel.value) {
+    payload.endImageUrl = form.value.endImageUrl;
+    payload.generateAudio = form.value.generateAudio;
+    payload.draft = form.value.draft;
+  }
+
   try {
-    await createTask(value, taskType.value, platform.value);
-    content.value = '';
+    await createTask(payload);
+    form.value.prompt = '';
     message.success('提交成功');
     await fetchTasks();
     startPolling();
@@ -214,31 +362,21 @@ const handleDelete = async (id: number) => {
 
 const statusColor = (status: string) => {
   switch (status) {
-    case 'pending':
-      return 'orange';
-    case 'processing':
-      return 'blue';
-    case 'completed':
-      return 'green';
-    case 'failed':
-      return 'red';
-    default:
-      return 'default';
+    case 'pending': return 'orange';
+    case 'processing': return 'blue';
+    case 'completed': return 'green';
+    case 'failed': return 'red';
+    default: return 'default';
   }
 };
 
 const statusText = (status: string) => {
   switch (status) {
-    case 'pending':
-      return '排队中';
-    case 'processing':
-      return '生成中';
-    case 'completed':
-      return '已完成';
-    case 'failed':
-      return '失败';
-    default:
-      return status;
+    case 'pending': return '排队中';
+    case 'processing': return '生成中';
+    case 'completed': return '已完成';
+    case 'failed': return '失败';
+    default: return status;
   }
 };
 
@@ -247,9 +385,7 @@ const typeText = (type: string) => {
 };
 
 const platformLabel = (platformName: string) => {
-  const map: Record<string, string> = {
-    jimeng: '即梦 (Jimeng)'
-  };
+  const map: Record<string, string> = { jimeng: '即梦 (Jimeng)' };
   return map[platformName] || platformName;
 };
 
@@ -292,5 +428,22 @@ onUnmounted(() => {
   margin-bottom: 12px;
   color: #888;
   font-size: 12px;
+}
+
+.duration-value {
+  text-align: right;
+  color: #666;
+  font-size: 12px;
+}
+
+.preview-text {
+  color: #52c41a;
+  font-size: 12px;
+}
+
+.hint {
+  color: #999;
+  font-size: 12px;
+  margin-top: 4px;
 }
 </style>
