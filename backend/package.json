@@ -26,9 +26,10 @@
   },
   "nodemonConfig": {
     "watch": [
-      "src"
+      "src",
+      ".env"
     ],
-    "ext": "ts",
+    "ext": "ts,env",
     "exec": "ts-node"
   }
 }

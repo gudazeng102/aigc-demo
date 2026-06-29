@@ -7,6 +7,9 @@
         mode="inline"
         :selectedKeys="selectedKeys"
       >
+        <a-menu-item key="/chat" @click="$router.push('/chat')">
+          <span>对话管理</span>
+        </a-menu-item>
         <a-menu-item key="/image" @click="$router.push('/image')">
           <span>图像生成</span>
         </a-menu-item>

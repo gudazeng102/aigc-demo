@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import taskRoutes from './routes/task';
+import chatRoutes from './routes/chat';
 
 const app = express();
 
@@ -13,5 +14,6 @@ app.get('/api/health', (req, res) => {
 });
 
 app.use('/api', taskRoutes);
+app.use('/api', chatRoutes);
 
 export default app;
