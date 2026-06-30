@@ -32,7 +32,7 @@
     <div class="chat-main">
       <template v-if="currentSessionId">
         <!-- 消息气泡区 -->
-        <div class="message-area" ref="messageAreaRef">
+        <div class="message-area" ref="messageAreaRef" @scroll="handleScroll">
           <ChatMessage
             v-for="msg in messages"
             :key="msg.id"
@@ -40,6 +40,8 @@
             :content="msg.content"
             :type="msg.type"
             :result-url="msg.result_url"
+            :params="msg.params"
+            @reuse-params="handleReuseParams"
           />
           <!-- loading 气泡 -->
           <ChatMessage
@@ -62,6 +64,7 @@
         <ChatParamsPanel
           :mode="currentMode"
           :params="currentParams"
+          :last-params="lastGenerationParams"
           @update:params="handleParamsUpdate"
         />
 
@@ -127,7 +130,9 @@ const isGenerating = ref(false);
 const deleteTargetId = ref<number | null>(null);
 const deleteModalVisible = ref(false);
 const currentParams = ref<Record<string, any>>({});
+const lastGenerationParams = ref<Record<string, any> | null>(null);
 const messageAreaRef = ref<HTMLDivElement | null>(null);
+const isUserScrolledUp = ref(false);
 
 const getDefaultTitle = (session: any) => {
   const date = new Date(session.created_at);
@@ -165,6 +170,7 @@ const selectSession = async (id: number) => {
     } else {
       currentParams.value = {};
     }
+    lastGenerationParams.value = null;
   }
   await fetchMessages(id);
 };
@@ -173,31 +179,37 @@ const fetchMessages = async (sessionId: number) => {
   try {
     const response = await getMessages(sessionId);
     messages.value = response.data;
+    // 查找最近一条生成结果的参数
+    updateLastGenerationParams();
     scrollToBottom();
-    // 检查是否有后台正在处理但前端还没有收到完成消息的任务
-    checkForLoading();
   } catch (error) {
     console.error('获取消息失败:', error);
   }
 };
 
-const checkForLoading = () => {
-  // 如果最后一条 AI 消息是生成中的状态，启动轮询
-  const lastMsg = messages.value[messages.value.length - 1];
-  if (lastMsg && lastMsg.role === 'user') {
-    // 用户发了消息但还没有收到 AI 回复（可能的 pending 状态）
-    // 启动一次主动查询
-    if (currentSessionId.value) {
-      setTimeout(() => {
-        fetchMessages(currentSessionId.value!);
-      }, 2000);
+const updateLastGenerationParams = () => {
+  const lastGenMsg = [...messages.value].reverse().find(
+    (m: any) => m.role === 'assistant' && (m.type === 'image' || m.type === 'video') && m.params
+  );
+  if (lastGenMsg) {
+    try {
+      lastGenerationParams.value = JSON.parse(lastGenMsg.params);
+    } catch {
+      lastGenerationParams.value = null;
     }
   }
 };
 
+const handleScroll = () => {
+  if (!messageAreaRef.value) return;
+  const el = messageAreaRef.value;
+  const threshold = 50;
+  isUserScrolledUp.value = el.scrollHeight - el.scrollTop - el.clientHeight > threshold;
+};
+
 const scrollToBottom = () => {
   nextTick(() => {
-    if (messageAreaRef.value) {
+    if (messageAreaRef.value && !isUserScrolledUp.value) {
       messageAreaRef.value.scrollTop = messageAreaRef.value.scrollHeight;
     }
   });
@@ -208,9 +220,8 @@ const handleNewChat = async () => {
     const response = await createSession('chat');
     const newSession = response.data;
     await fetchSessions();
-    await selectSession(newSession.id);
-    // 选中新建的会话
     currentSessionId.value = newSession.id;
+    await selectSession(newSession.id);
   } catch (error) {
     console.error('创建会话失败:', error);
     message.error('创建会话失败');
@@ -240,7 +251,7 @@ const confirmDelete = async () => {
   deleteTargetId.value = null;
 };
 
-const handleModeChanged = (sessionId: number, mode: string) => {
+const handleModeChanged = (sessionId: number, _mode: string) => {
   fetchSessions();
   selectSession(sessionId);
 };
@@ -251,6 +262,11 @@ const handleImageUploaded = (base64: string) => {
 
 const handleParamsUpdate = (params: Record<string, any>) => {
   currentParams.value = { ...params };
+};
+
+const handleReuseParams = (params: Record<string, any>) => {
+  currentParams.value = { ...params };
+  message.success('参数已填充到面板');
 };
 
 const handleKeydown = (e: KeyboardEvent) => {
@@ -264,6 +280,10 @@ const handleSend = async () => {
   const msg = inputMessage.value.trim();
   if (!msg || !currentSessionId.value || isGenerating.value) return;
 
+  // 判断是否为重新生成指令
+  const regenerateKeywords = ['重新生成', '再来一次', '再生成', '再来一张', '再来一段', '重做'];
+  const isRegenerate = regenerateKeywords.some(kw => msg.includes(kw));
+
   // 立即追加用户消息到本地列表
   const userMsg = {
     id: Date.now(),
@@ -276,20 +296,21 @@ const handleSend = async () => {
   messages.value.push(userMsg);
   inputMessage.value = '';
   isGenerating.value = true;
+  isUserScrolledUp.value = false;
   scrollToBottom();
 
   try {
-    const response = await sendMessage({
+    await sendMessage({
       sessionId: currentSessionId.value,
       message: msg,
       mode: currentMode.value,
       params: currentParams.value,
+      isRegenerate,
     });
 
     if (currentMode.value === 'chat') {
       // 普通对话：同步返回
       isGenerating.value = false;
-      // 重新获取最新消息
       await fetchMessages(currentSessionId.value);
     } else {
       // 生成对话：异步 processing，启动轮询
@@ -304,18 +325,15 @@ const handleSend = async () => {
 };
 
 const pollForResult = async (sessionId: number) => {
-  // 最多轮询 60 次（3 分钟）
   for (let i = 0; i < 60; i++) {
     await new Promise((r) => setTimeout(r, 3000));
     try {
       const response = await getMessages(sessionId);
       const latestMessages = response.data;
-      const lastMsg = latestMessages[latestMessages.length - 1];
-
-      // 检查是否有新的 AI 消息（非 loading 状态）
       const prevMsgCount = messages.value.length;
       if (latestMessages.length > prevMsgCount) {
         messages.value = latestMessages;
+        updateLastGenerationParams();
         isGenerating.value = false;
         scrollToBottom();
         return;
@@ -324,14 +342,13 @@ const pollForResult = async (sessionId: number) => {
       console.error('轮询失败:', error);
     }
   }
-  // 超时
   isGenerating.value = false;
   message.warning('生成超时，请查看结果或重试');
 };
 
-// 监听会话切换时清除生成状态
 watch(currentSessionId, () => {
   isGenerating.value = false;
+  isUserScrolledUp.value = false;
 });
 
 onMounted(async () => {

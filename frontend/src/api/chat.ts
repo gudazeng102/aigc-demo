@@ -34,6 +34,11 @@ export function sendMessage(data: {
   message: string;
   mode: string;
   params?: Record<string, any>;
+  isRegenerate?: boolean;
 }) {
-  return api.post('/chat/message', data);
+  // 对话/意图识别可能等待 LLM 返回，超时放宽到 120 秒
+  return api.post('/chat/message', data, {
+    timeout: 120000,
+    headers: { 'Content-Type': 'application/json' }
+  });
 }

@@ -5,6 +5,15 @@
     </a-button>
 
     <div v-show="expanded" class="params-body">
+      <!-- 底部操作按钮 -->
+      <div class="params-actions">
+        <a-button size="small" @click="handleReset">
+          🔄 恢复默认
+        </a-button>
+        <a-button size="small" :disabled="!hasLastParams" @click="handleReuseLast">
+          📋 复用上一轮参数
+        </a-button>
+      </div>
       <!-- 图像参数 -->
       <template v-if="mode === 'image'">
         <div class="param-row">
@@ -114,6 +123,7 @@ const MODEL_PRO = 'doubao-seedance-1-5-pro-251215';
 const props = defineProps<{
   mode: string;
   params: Record<string, any>;
+  lastParams?: Record<string, any> | null;
 }>();
 
 const emit = defineEmits<{
@@ -140,6 +150,25 @@ const defaultVideoParams: Record<string, any> = {
 };
 
 const localParams = ref<Record<string, any>>({ ...props.params });
+
+const hasLastParams = computed(() => {
+  return props.lastParams && Object.keys(props.lastParams).length > 0;
+});
+
+function handleReset() {
+  const defaults = props.mode === 'image' ? defaultImageParams : defaultVideoParams;
+  localParams.value = { ...defaults };
+  emit('update:params', { ...localParams.value });
+  message.success('已恢复默认参数');
+}
+
+function handleReuseLast() {
+  if (props.lastParams) {
+    localParams.value = { ...props.lastParams };
+    emit('update:params', { ...localParams.value });
+    message.success('已复用上一轮参数');
+  }
+}
 
 watch(() => props.mode, () => {
   if (props.mode === 'image') {
@@ -228,6 +257,15 @@ const beforeUpload = (file: File, field: string) => {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.params-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-start;
+  padding: 4px 0;
+  border-bottom: 1px solid #f0f0f0;
+  margin-bottom: 4px;
 }
 
 .param-row {
