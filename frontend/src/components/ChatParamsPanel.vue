@@ -13,7 +13,28 @@
         <a-button size="small" :disabled="!hasLastParams" @click="handleReuseLast">
           📋 复用上一轮参数
         </a-button>
+        <a-button size="small" type="primary" ghost @click="showSavePresetModal">
+          💾 保存为预设
+        </a-button>
       </div>
+
+      <!-- 保存预设模态框 -->
+      <a-modal
+        v-model:open="savePresetModalVisible"
+        title="保存为预设"
+        @ok="handleSavePreset"
+        @cancel="savePresetModalVisible = false"
+        ok-text="保存"
+      >
+        <a-form layout="vertical">
+          <a-form-item label="预设名称" required>
+            <a-input v-model:value="presetForm.name" placeholder="请输入预设名称" />
+          </a-form-item>
+          <a-form-item label="描述">
+            <a-textarea v-model:value="presetForm.description" :rows="2" placeholder="可选描述" />
+          </a-form-item>
+        </a-form>
+      </a-modal>
       <!-- 图像参数 -->
       <template v-if="mode === 'image'">
         <div class="param-row">
@@ -116,6 +137,8 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
 import { message } from 'ant-design-vue';
+import { createPreset } from '../api/preset';
+import { useRouter } from 'vue-router';
 
 const MODEL_FAST = 'doubao-seedance-1-0-pro-fast-251015';
 const MODEL_PRO = 'doubao-seedance-1-5-pro-251215';
@@ -129,6 +152,41 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'update:params', params: Record<string, any>): void;
 }>();
+
+const router = useRouter();
+
+// 保存预设相关
+const savePresetModalVisible = ref(false);
+const presetForm = ref({
+  name: '',
+  description: '',
+});
+
+function showSavePresetModal() {
+  presetForm.value = { name: '', description: '' };
+  savePresetModalVisible.value = true;
+}
+
+async function handleSavePreset() {
+  if (!presetForm.value.name.trim()) {
+    message.warning('请输入预设名称');
+    return;
+  }
+  try {
+    await createPreset({
+      name: presetForm.value.name,
+      description: presetForm.value.description,
+      mode: props.mode,
+      prompt: '',
+      params: { ...localParams.value },
+    });
+    message.success('预设保存成功');
+    savePresetModalVisible.value = false;
+  } catch (error) {
+    console.error('保存预设失败:', error);
+    message.error('保存失败');
+  }
+}
 
 const expanded = ref(false);
 
@@ -170,14 +228,19 @@ function handleReuseLast() {
   }
 }
 
-watch(() => props.mode, () => {
-  if (props.mode === 'image') {
-    localParams.value = { ...defaultImageParams, ...props.params };
-  } else if (props.mode === 'video') {
-    localParams.value = { ...defaultVideoParams, ...props.params };
-  }
-  expanded.value = false;
-});
+// 同时监听 mode 和 params 变化，任一变化都同步到 localParams
+watch(
+  [() => props.mode, () => props.params],
+  ([newMode, newParams]) => {
+    if (newMode === 'image') {
+      localParams.value = { ...defaultImageParams, ...newParams };
+    } else if (newMode === 'video') {
+      localParams.value = { ...defaultVideoParams, ...newParams };
+    }
+    expanded.value = false;
+  },
+  { deep: true }
+);
 
 watch(localParams, (val) => {
   emit('update:params', { ...val });

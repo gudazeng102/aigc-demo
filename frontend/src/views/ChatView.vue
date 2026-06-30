@@ -30,7 +30,7 @@
 
     <!-- 右栏：聊天区域 -->
     <div class="chat-main">
-      <template v-if="currentSessionId">
+      <template v-if="showEditor">
         <!-- 消息气泡区 -->
         <div class="message-area" ref="messageAreaRef" @scroll="handleScroll">
           <ChatMessage
@@ -58,6 +58,21 @@
           :current-session-id="currentSessionId"
           @mode-changed="handleModeChanged"
           @image-uploaded="handleImageUploaded"
+          @switch-mode-local="handleSwitchModeLocal"
+        />
+
+        <!-- 模板与预设快捷按钮 -->
+        <div class="template-shortcut" v-if="currentMode !== 'chat'">
+          <a-button size="small" @click="templatePanelVisible = !templatePanelVisible">
+            {{ templatePanelVisible ? '▲ 收起模板与预设' : '📚 模板与预设' }}
+          </a-button>
+        </div>
+
+        <!-- 模板与预设面板 -->
+        <ChatTemplatePanel
+          :visible="templatePanelVisible"
+          :current-mode="currentMode"
+          @apply="handleTemplateApply"
         />
 
         <!-- 参数面板 -->
@@ -90,7 +105,7 @@
         </div>
       </template>
 
-      <!-- 无选中会话 -->
+      <!-- 无编辑状态 -->
       <div v-else class="empty-state">
         <a-empty description="请选择或新建一个对话">
           <a-button type="primary" @click="handleNewChat">新建对话</a-button>
@@ -109,16 +124,28 @@
     >
       <p>是否删除当前对话？删除后不可恢复。</p>
     </a-modal>
+
+    <!-- 模式切换确认弹窗（模板/预设跨模式应用） -->
+    <a-modal
+      v-model:open="modeSwitchModalVisible"
+      title="切换模式"
+      @ok="confirmModeSwitch"
+      @cancel="modeSwitchModalVisible = false"
+      ok-text="确认切换"
+    >
+      <p>{{ modeSwitchModalContent }}</p>
+    </a-modal>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, nextTick, watch } from 'vue';
+import { ref, computed, onMounted, nextTick, watch } from 'vue';
 import { message } from 'ant-design-vue';
 import { SendOutlined } from '@ant-design/icons-vue';
 import ChatMessage from '../components/ChatMessage.vue';
 import ChatToolbar from '../components/ChatToolbar.vue';
 import ChatParamsPanel from '../components/ChatParamsPanel.vue';
+import ChatTemplatePanel from '../components/ChatTemplatePanel.vue';
 import { createSession, getSessions, deleteSession, getMessages, sendMessage } from '../api/chat';
 
 const sessions = ref<any[]>([]);
@@ -133,6 +160,18 @@ const currentParams = ref<Record<string, any>>({});
 const lastGenerationParams = ref<Record<string, any> | null>(null);
 const messageAreaRef = ref<HTMLDivElement | null>(null);
 const isUserScrolledUp = ref(false);
+const templatePanelVisible = ref(false);
+
+// 标识是否有"待创建"的编辑状态（会话还未持久化到数据库）
+const hasPendingEditor = ref(false);
+
+// 显示编辑器的条件：已选中某会话 OR 有未创建的待编辑状态
+const showEditor = computed(() => currentSessionId !== null || hasPendingEditor.value);
+
+// 模板/预设跨模式切换确认
+const modeSwitchModalVisible = ref(false);
+const modeSwitchModalContent = ref('');
+const pendingTemplateApply = ref<{ prompt: string; params: Record<string, any>; mode: string } | null>(null);
 
 const getDefaultTitle = (session: any) => {
   const date = new Date(session.created_at);
@@ -150,6 +189,7 @@ const fetchSessions = async () => {
 };
 
 const selectSession = async (id: number) => {
+  hasPendingEditor.value = false;
   currentSessionId.value = id;
   const session = sessions.value.find((s: any) => s.id === id);
   if (session) {
@@ -179,7 +219,6 @@ const fetchMessages = async (sessionId: number) => {
   try {
     const response = await getMessages(sessionId);
     messages.value = response.data;
-    // 查找最近一条生成结果的参数
     updateLastGenerationParams();
     scrollToBottom();
   } catch (error) {
@@ -215,17 +254,49 @@ const scrollToBottom = () => {
   });
 };
 
-const handleNewChat = async () => {
-  try {
-    const response = await createSession('chat');
-    const newSession = response.data;
-    await fetchSessions();
-    currentSessionId.value = newSession.id;
-    await selectSession(newSession.id);
-  } catch (error) {
-    console.error('创建会话失败:', error);
-    message.error('创建会话失败');
+/**
+ * 初始化一个待创建的编辑器状态（不调 API，不持久化）
+ */
+function initPendingEditor(mode: string) {
+  hasPendingEditor.value = true;
+  currentSessionId.value = null;
+  currentMode.value = mode;
+  messages.value = [];
+  lastGenerationParams.value = null;
+  templatePanelVisible.value = false;
+
+  if (mode === 'image') {
+    currentParams.value = { resolution: '1K', ratio: '1:1', imageUrl: '' };
+  } else if (mode === 'video') {
+    currentParams.value = {
+      model: 'doubao-seedance-1-5-pro-251215',
+      resolution: '720p',
+      ratio: '16:9',
+      duration: 5,
+      imageUrl: '',
+      endImageUrl: '',
+      generateAudio: false,
+      draft: false,
+    };
+  } else {
+    currentParams.value = {};
   }
+
+  // 所有模式都插入本地欢迎语（首次发送时 fetchMessages 会被服务端数据覆盖）
+  messages.value.push({
+    id: -1,
+    session_id: -1,
+    role: 'assistant',
+    content: '你好，我是您的人工助手，请问需要什么帮助？',
+    type: 'text',
+    result_url: '',
+  });
+}
+
+// 新建对话：只初始化本地状态，不调 createSession API
+const handleNewChat = () => {
+  initPendingEditor('chat');
+  inputMessage.value = '';
 };
 
 const showDeleteConfirm = (id: number) => {
@@ -241,6 +312,7 @@ const confirmDelete = async () => {
     if (currentSessionId.value === deleteTargetId.value) {
       currentSessionId.value = null;
       messages.value = [];
+      hasPendingEditor.value = false;
     }
     message.success('删除成功');
   } catch (error) {
@@ -254,6 +326,12 @@ const confirmDelete = async () => {
 const handleModeChanged = (sessionId: number, _mode: string) => {
   fetchSessions();
   selectSession(sessionId);
+};
+
+/** 工具栏"切换模式"确认后调用（本地切换，不调 createSession） */
+const handleSwitchModeLocal = (targetMode: string) => {
+  initPendingEditor(targetMode);
+  inputMessage.value = '';
 };
 
 const handleImageUploaded = (base64: string) => {
@@ -276,52 +354,117 @@ const handleKeydown = (e: KeyboardEvent) => {
   }
 };
 
+/**
+ * 处理模板/预设"应用"事件
+ */
+const handleTemplateApply = (data: { prompt: string; params: Record<string, any>; mode: string }) => {
+  templatePanelVisible.value = false;
+
+  // 如果当前无编辑器，或模式匹配，直接填充
+  if (!showEditor.value || currentMode.value === data.mode) {
+    applyTemplateData(data);
+    return;
+  }
+
+  // 模式不匹配，弹出确认
+  const modeLabel = data.mode === 'image' ? '图像生成' : '视频生成';
+  modeSwitchModalContent.value = `当前为${currentMode.value === 'image' ? '图像' : '视频'}对话，该模板为${modeLabel}模式。是否切换到${modeLabel}？`;
+  pendingTemplateApply.value = data;
+  modeSwitchModalVisible.value = true;
+};
+
+/** 确认跨模式切换 */
+const confirmModeSwitch = () => {
+  if (!pendingTemplateApply.value) return;
+  const data = pendingTemplateApply.value;
+  // 直接切换本地状态，不调 createSession
+  initPendingEditor(data.mode);
+  applyTemplateData(data);
+  modeSwitchModalVisible.value = false;
+  pendingTemplateApply.value = null;
+};
+
+/** 填充模板/预设数据到输入框和参数面板 */
+const applyTemplateData = (data: { prompt: string; params: Record<string, any>; mode: string }) => {
+  // 总是重置本地编辑器状态，确保界面完全刷新（和侧边栏"我的预设"行为一致）
+  initPendingEditor(data.mode);
+  inputMessage.value = data.prompt;
+  currentParams.value = { ...currentParams.value, ...data.params };
+  message.success('已填充模板参数');
+};
+
 const handleSend = async () => {
   const msg = inputMessage.value.trim();
-  if (!msg || !currentSessionId.value || isGenerating.value) return;
+  if (!msg || isGenerating.value) return;
 
-  // 判断是否为重新生成指令
-  const regenerateKeywords = ['重新生成', '再来一次', '再生成', '再来一张', '再来一段', '重做'];
-  const isRegenerate = regenerateKeywords.some(kw => msg.includes(kw));
-
-  // 立即追加用户消息到本地列表
-  const userMsg = {
-    id: Date.now(),
-    session_id: currentSessionId.value,
-    role: 'user',
-    content: msg,
-    type: 'text',
-    result_url: '',
-  };
-  messages.value.push(userMsg);
-  inputMessage.value = '';
-  isGenerating.value = true;
-  isUserScrolledUp.value = false;
-  scrollToBottom();
-
-  try {
-    await sendMessage({
-      sessionId: currentSessionId.value,
-      message: msg,
-      mode: currentMode.value,
-      params: currentParams.value,
-      isRegenerate,
-    });
-
-    if (currentMode.value === 'chat') {
-      // 普通对话：同步返回
-      isGenerating.value = false;
-      await fetchMessages(currentSessionId.value);
-    } else {
-      // 生成对话：异步 processing，启动轮询
-      const sessionId = currentSessionId.value;
-      pollForResult(sessionId);
+  // 先准备好会话 ID（有 pending 就先创建）
+  let sessionId = currentSessionId.value;
+  if (sessionId === null && hasPendingEditor.value) {
+    try {
+      const response = await createSession(currentMode.value);
+      const newSession = response.data;
+      sessionId = newSession.id;
+      currentSessionId.value = newSession.id;
+      hasPendingEditor.value = false;
+      await fetchSessions();
+    } catch (error) {
+      console.error('创建会话失败:', error);
+      message.error('创建会话失败');
+      return;
     }
-  } catch (error) {
-    console.error('发送消息失败:', error);
-    message.error('发送失败');
-    isGenerating.value = false;
   }
+
+  if (sessionId === null) {
+    message.error('请先选择或创建一个对话');
+    return;
+  }
+
+  // ===== 关键：用 setTimeout 将 UI 更新和网络请求拆到两个宏任务 =====
+  // 这样浏览器能在第一个宏任务中绘制出 loading 气泡
+  setTimeout(async () => {
+    isGenerating.value = true;
+
+    const regenerateKeywords = ['重新生成', '再来一次', '再生成', '再来一张', '再来一段', '重做'];
+    const isRegenerate = regenerateKeywords.some(kw => msg.includes(kw));
+
+    messages.value.push({
+      id: Date.now(),
+      session_id: sessionId,
+      role: 'user',
+      content: msg,
+      type: 'text',
+      result_url: '',
+    });
+    inputMessage.value = '';
+    scrollToBottom();
+
+    // 给浏览器 200ms 绘制 UI（用户消息 + loading 气泡）
+    await new Promise((r) => setTimeout(r, 200));
+
+    try {
+      const networkPromise = sendMessage({
+        sessionId,
+        message: msg,
+        mode: currentMode.value,
+        params: currentParams.value,
+        isRegenerate,
+      }).catch(() => {});
+
+      if (currentMode.value === 'chat') {
+        await networkPromise;
+        isGenerating.value = false;
+        await fetchMessages(sessionId);
+      } else {
+        const minLoad = new Promise((r) => setTimeout(r, 2000));
+        pollForResult(sessionId);
+        await minLoad;
+      }
+    } catch (error) {
+      console.error('发送消息失败:', error);
+      message.error('发送失败');
+      isGenerating.value = false;
+    }
+  }, 0);
 };
 
 const pollForResult = async (sessionId: number) => {
@@ -330,8 +473,9 @@ const pollForResult = async (sessionId: number) => {
     try {
       const response = await getMessages(sessionId);
       const latestMessages = response.data;
-      const prevMsgCount = messages.value.length;
-      if (latestMessages.length > prevMsgCount) {
+      // 服务端消息数（排除本地欢迎语 id<0）
+      const serverMsgCount = messages.value.filter((m: any) => m.id > 0).length;
+      if (latestMessages.length > serverMsgCount) {
         messages.value = latestMessages;
         updateLastGenerationParams();
         isGenerating.value = false;
@@ -351,8 +495,27 @@ watch(currentSessionId, () => {
   isUserScrolledUp.value = false;
 });
 
+// 从 sessionStorage 读取模板/预设应用数据（来自 TemplateLibrary / MyPresets 页面）
+// 不再调 createSession，而是设置为待创建状态
 onMounted(async () => {
   await fetchSessions();
+
+  const stored = sessionStorage.getItem('applyTemplate');
+  if (stored) {
+    sessionStorage.removeItem('applyTemplate');
+    try {
+      const data = JSON.parse(stored);
+      initPendingEditor(data.mode);
+      currentParams.value = { ...currentParams.value, ...data.params };
+      inputMessage.value = data.prompt;
+      message.success('已应用模板参数');
+    } catch (error) {
+      console.error('应用模板失败:', error);
+    }
+    return;
+  }
+
+  // 默认选中第一个会话
   if (sessions.value.length > 0) {
     await selectSession(sessions.value[0].id);
   }
@@ -453,6 +616,10 @@ onMounted(async () => {
   overflow-y: auto;
   padding: 8px 4px;
   margin-bottom: 8px;
+}
+
+.template-shortcut {
+  padding: 4px 0;
 }
 
 .input-area {

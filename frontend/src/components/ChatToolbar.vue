@@ -37,7 +37,6 @@
 
 <script setup lang="ts">
 import { ref } from 'vue';
-import { createSession } from '../api/chat';
 
 const props = defineProps<{
   mode: string;
@@ -47,6 +46,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'mode-changed', sessionId: number, mode: string): void;
   (e: 'image-uploaded', base64: string): void;
+  (e: 'switch-mode-local', mode: string): void;
 }>();
 
 const switchModalVisible = ref(false);
@@ -67,18 +67,13 @@ const handleUploadImage = (file: File) => {
 const handleSwitchMode = (targetMode: 'image' | 'video') => {
   switchTargetMode.value = targetMode;
   const label = targetMode === 'image' ? '图像生成' : '视频生成';
-  switchModalContent.value = `是否切换到${label}模式？这将创建一个新的${label}对话。`;
+  switchModalContent.value = `是否切换到${label}模式？`;
   switchModalVisible.value = true;
 };
 
-const confirmSwitchMode = async () => {
-  try {
-    const response = await createSession(switchTargetMode.value);
-    const newSession = response.data;
-    emit('mode-changed', newSession.id, switchTargetMode.value);
-  } catch (error) {
-    console.error('创建会话失败:', error);
-  }
+const confirmSwitchMode = () => {
+  // 不再调 createSession，只 emit 本地切换事件，由 ChatView 延迟创建
+  emit('switch-mode-local', switchTargetMode.value);
   switchModalVisible.value = false;
 };
 </script>

@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import taskRoutes from './routes/task';
 import chatRoutes from './routes/chat';
+import presetRoutes from './routes/preset';
 
 const app = express();
 
@@ -15,6 +16,7 @@ app.get('/api/health', (req, res) => {
 
 app.use('/api', taskRoutes);
 app.use('/api', chatRoutes);
+app.use('/api', presetRoutes);
 
 // 全局错误处理中间件（防止请求体过大等问题导致进程崩溃）
 app.use((err: any, req: any, res: any, next: any) => {

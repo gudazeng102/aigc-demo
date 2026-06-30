@@ -31,4 +31,17 @@ if (!columnNames.has('error_message')) {
   db.exec("ALTER TABLE tasks ADD COLUMN error_message TEXT DEFAULT ''");
 }
 
+// 第八轮：新增 presets 表（用户预设）
+db.exec(`
+  CREATE TABLE IF NOT EXISTS presets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    mode TEXT NOT NULL,
+    prompt TEXT DEFAULT '',
+    params TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+
 export default db;

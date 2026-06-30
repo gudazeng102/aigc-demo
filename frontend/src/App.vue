@@ -8,14 +8,22 @@
         :selectedKeys="selectedKeys"
       >
         <a-menu-item key="/chat" @click="$router.push('/chat')">
-          <span>对话管理</span>
+          <span>💬 对话管理</span>
         </a-menu-item>
         <a-menu-item key="/image" @click="$router.push('/image')">
-          <span>图像生成</span>
+          <span>🖼️ 图像生成</span>
         </a-menu-item>
         <a-menu-item key="/video" @click="$router.push('/video')">
-          <span>视频生成</span>
+          <span>🎬 视频生成</span>
         </a-menu-item>
+        <a-sub-menu key="preset-manage" title="📁 预设管理">
+          <a-menu-item key="/template-library" @click="$router.push('/template-library')">
+            <span>📚 模板库</span>
+          </a-menu-item>
+          <a-menu-item key="/my-presets" @click="$router.push('/my-presets')">
+            <span>📌 我的预设</span>
+          </a-menu-item>
+        </a-sub-menu>
       </a-menu>
     </a-layout-sider>
 
